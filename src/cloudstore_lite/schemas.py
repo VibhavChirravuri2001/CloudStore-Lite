@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ObjectMetadata(BaseModel):
@@ -19,3 +19,12 @@ class DeleteResponse(BaseModel):
 
 class HealthStatus(BaseModel):
     status: str
+
+
+class SignedURLRequest(BaseModel):
+    expires_in_seconds: int | None = Field(default=None, ge=60, le=86400)
+
+
+class SignedURLResponse(BaseModel):
+    url: str
+    expires_at: datetime
