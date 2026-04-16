@@ -7,8 +7,10 @@ __pycache__/
 .coverage
 dist/
 build/
+*.egg-info/
 .mypy_cache/
 .ruff_cache/
 .env
 storage/
-
+.pytest_tmp/
+pytest-cache-files-*/
