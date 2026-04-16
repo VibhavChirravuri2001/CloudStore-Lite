@@ -1,21 +1,36 @@
 from contextlib import asynccontextmanager
+from uuid import UUID
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from cloudstore_lite.config import get_settings
-from cloudstore_lite.db import init_db
-from cloudstore_lite.schemas import HealthStatus
+from cloudstore_lite.db import get_db_session, init_db
+from cloudstore_lite.models import StoredObject
+from cloudstore_lite.schemas import DeleteResponse, HealthStatus, ObjectMetadata
+from cloudstore_lite.storage import LocalObjectStorage
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     settings = get_settings()
-    settings.storage_root.mkdir(parents=True, exist_ok=True)
+    app.state.storage = LocalObjectStorage(settings.storage_root)
     init_db()
     yield
 
 
 app = FastAPI(title="CloudStore-Lite", version="0.1.0", lifespan=lifespan)
+
+
+def get_storage() -> LocalObjectStorage:
+    return app.state.storage
+
+
+def to_metadata(record: StoredObject) -> ObjectMetadata:
+    return ObjectMetadata.model_validate(record, from_attributes=True)
 
 
 @app.get("/health/live", response_model=HealthStatus, tags=["health"])
@@ -26,3 +41,84 @@ def liveness() -> HealthStatus:
 @app.get("/health/ready", response_model=HealthStatus, tags=["health"])
 def readiness() -> HealthStatus:
     return HealthStatus(status="ok")
+
+
+@app.post("/objects", response_model=ObjectMetadata, status_code=status.HTTP_201_CREATED, tags=["objects"])
+def upload_object(
+    file: UploadFile = File(...),
+    session: Session = Depends(get_db_session),
+    storage: LocalObjectStorage = Depends(get_storage),
+) -> ObjectMetadata:
+    payload = storage.save_upload(file)
+    record = StoredObject(
+        filename=file.filename or "unnamed",
+        content_type=payload.content_type,
+        size_bytes=payload.size_bytes,
+        checksum_sha256=payload.checksum_sha256,
+        storage_key=payload.storage_key,
+    )
+
+    try:
+        session.add(record)
+        session.commit()
+        session.refresh(record)
+    except SQLAlchemyError as exc:
+        session.rollback()
+        storage.delete(payload.storage_key)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Upload metadata could not be persisted.",
+        ) from exc
+
+    return to_metadata(record)
+
+
+@app.get("/objects", response_model=list[ObjectMetadata], tags=["objects"])
+def list_objects(session: Session = Depends(get_db_session)) -> list[ObjectMetadata]:
+    records = session.scalars(select(StoredObject).order_by(StoredObject.created_at.desc())).all()
+    return [to_metadata(record) for record in records]
+
+
+@app.get("/objects/{object_id}", tags=["objects"])
+def download_object(
+    object_id: UUID,
+    session: Session = Depends(get_db_session),
+    storage: LocalObjectStorage = Depends(get_storage),
+):
+    record = session.get(StoredObject, object_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Object not found.")
+
+    path = storage.path_for(record.storage_key)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Object payload is missing from storage.",
+        )
+
+    return FileResponse(path=path, media_type=record.content_type, filename=record.filename)
+
+
+@app.delete("/objects/{object_id}", response_model=DeleteResponse, tags=["objects"])
+def delete_object(
+    object_id: UUID,
+    session: Session = Depends(get_db_session),
+    storage: LocalObjectStorage = Depends(get_storage),
+) -> DeleteResponse:
+    record = session.get(StoredObject, object_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Object not found.")
+
+    storage_key = record.storage_key
+    try:
+        session.delete(record)
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Object metadata could not be deleted.",
+        ) from exc
+
+    storage.delete(storage_key)
+    return DeleteResponse(status="deleted")

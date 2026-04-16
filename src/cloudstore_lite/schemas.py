@@ -13,6 +13,9 @@ class ObjectMetadata(BaseModel):
     created_at: datetime
 
 
-class HealthStatus(BaseModel):
+class DeleteResponse(BaseModel):
     status: str
 
+
+class HealthStatus(BaseModel):
+    status: str
