@@ -1,0 +1,2 @@
+"""CloudStore-Lite package."""
+
