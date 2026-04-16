@@ -60,6 +60,8 @@ def test_object_lifecycle_flow(client: TestClient) -> None:
         files={"file": ("hello.txt", b"hello cloudstore", "text/plain")},
     )
     assert upload_response.status_code == 201
+    assert "X-Request-ID" in upload_response.headers
+    assert "X-Process-Time-Ms" in upload_response.headers
     metadata = upload_response.json()
 
     list_response = client.get("/objects", headers={"X-API-Key": "test-api-key"})
@@ -101,6 +103,34 @@ def test_signed_download_url_flow(client: TestClient) -> None:
 def test_protected_routes_require_api_key(client: TestClient) -> None:
     response = client.get("/objects")
     assert response.status_code == 401
+
+
+def test_invalid_signed_url_is_rejected(client: TestClient) -> None:
+    upload_response = client.post(
+        "/objects",
+        headers={"X-API-Key": "test-api-key"},
+        files={"file": ("tamper.txt", b"reject invalid signature", "text/plain")},
+    )
+    object_id = upload_response.json()["id"]
+
+    response = client.get(
+        f"/signed/objects/{object_id}",
+        params={"expires": 9999999999, "signature": "not-a-real-signature"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Signed URL signature is invalid."
+
+
+def test_request_id_header_is_echoed_back(client: TestClient) -> None:
+    response = client.get(
+        "/health/live",
+        headers={"X-Request-ID": "manual-request-id"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "manual-request-id"
+    assert "X-Process-Time-Ms" in response.headers
 
 
 def test_failed_metadata_commit_removes_uploaded_payload(tmp_path, monkeypatch) -> None:

@@ -1,5 +1,7 @@
+import logging
+import time
 from contextlib import asynccontextmanager
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
@@ -21,6 +23,8 @@ from cloudstore_lite.schemas import (
 from cloudstore_lite.signed_urls import build_signed_download_url, validate_signature
 from cloudstore_lite.storage import LocalObjectStorage
 
+logger = logging.getLogger("cloudstore_lite.requests")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,6 +35,39 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CloudStore-Lite", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def add_request_context(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID", str(uuid4()))
+    start = time.perf_counter()
+    request.state.request_id = request_id
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.exception(
+            "request_failed request_id=%s method=%s path=%s duration_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
+
+    duration_ms = (time.perf_counter() - start) * 1000
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Process-Time-Ms"] = f"{duration_ms:.2f}"
+    logger.info(
+        "request_completed request_id=%s method=%s path=%s status_code=%s duration_ms=%.2f",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
 
 
 def get_storage() -> LocalObjectStorage:

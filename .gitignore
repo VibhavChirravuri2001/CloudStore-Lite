@@ -12,5 +12,5 @@ build/
 .ruff_cache/
 .env
 storage/
-.pytest_tmp/
+.pytest_tmp*/
 pytest-cache-files-*/

@@ -36,6 +36,43 @@ This project is intentionally aligned with the kind of work common in infrastruc
 - Local filesystem storage holds object payloads
 - Docker Compose runs the API and database together
 
+```mermaid
+flowchart LR
+    Client["Client / cURL / TestClient"] --> API["FastAPI API Layer"]
+    API --> Auth["API Key + Signed URL Validation"]
+    API --> Meta["SQLAlchemy + PostgreSQL Metadata"]
+    API --> Storage["Local Filesystem Object Storage"]
+    Storage --> Disk["Atomic Final Object File"]
+    Storage --> Temp["Temporary .part Upload File"]
+```
+
+## Reliability guarantees
+
+CloudStore-Lite currently aims to preserve a few simple but important invariants:
+
+- An object is not listed unless its metadata commit succeeds
+- A file is not exposed as a final object until it has been fully written to disk
+- If metadata persistence fails after upload, the finalized payload is deleted
+- Signed download routes reject expired or tampered signatures
+- Protected routes reject missing or invalid API keys
+- Readiness only reports success when the service can talk to the database
+
+## Operations and debugging signals
+
+The service includes lightweight request correlation and timing information:
+
+- Every response includes `X-Request-ID`
+- If the client sends `X-Request-ID`, the service echoes it back
+- Every response includes `X-Process-Time-Ms`
+- The API logs one structured line per completed request with request ID, method, path, status code, and latency
+
+Example response headers:
+
+```text
+X-Request-ID: 0f2c2a87-0a8e-4b1e-8c8f-f4f2c2c3e411
+X-Process-Time-Ms: 3.42
+```
+
 ## Repository structure
 
 ```text
@@ -142,6 +179,7 @@ Expected result:
 - PostgreSQL starts successfully.
 - The API becomes available at `http://localhost:8000`.
 - The readiness endpoint eventually returns HTTP `200`.
+- Responses include request-correlation headers such as `X-Request-ID`.
 
 You can verify that with:
 
@@ -198,6 +236,7 @@ Expected result:
 - The FastAPI app starts successfully.
 - The service creates the `stored_objects` table if it does not already exist.
 - The storage directory is created automatically.
+- Request logs include method, path, status, request ID, and latency.
 
 ## How to test the service manually
 
@@ -212,6 +251,7 @@ curl -X POST "http://localhost:8000/objects" \
 Expected result:
 
 - HTTP status `201 Created`
+- Response headers include `X-Request-ID` and `X-Process-Time-Ms`
 - JSON response containing:
   - `id`
   - `filename`
@@ -330,7 +370,7 @@ Expected result:
 - Current expected outcome:
 
 ```text
-4 passed
+6 passed
 ```
 
 ## What the automated tests cover
@@ -338,6 +378,8 @@ Expected result:
 - Successful upload, list, download, and delete flow
 - Signed URL generation and signed download flow
 - API key enforcement on protected routes
+- Invalid signed URL rejection
+- Request ID propagation and latency headers
 - Cleanup behavior when metadata commit fails after file upload
 
 ## Failure-safe behavior
@@ -355,6 +397,24 @@ Behavior:
 Expected result:
 
 - The service avoids leaving orphaned payloads behind when metadata storage fails
+
+## Failure modes and current behavior
+
+These are the failure cases most relevant to correctness and supportability:
+
+- Missing or invalid API key
+  Expected behavior: protected routes return `401`
+- Invalid or tampered signed URL
+  Expected behavior: signed download route returns `403`
+- Expired signed URL
+  Expected behavior: signed download route returns `403`
+- Database failure during readiness check
+  Expected behavior: `/health/ready` returns `503`
+- Database failure after file upload but before metadata commit
+  Expected behavior: the request returns `500` and the stored payload is deleted
+- Interrupted upload before finalization
+  Expected behavior: no metadata record is created and no final object is exposed
+  Note: temporary `.part` files may remain after abrupt process termination and are a reasonable future cleanup enhancement
 
 ## Recruiter and reviewer talking points
 
