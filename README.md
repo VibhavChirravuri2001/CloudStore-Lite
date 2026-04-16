@@ -466,5 +466,5 @@ Someone reviewing this repository should be able to:
 Expected final outcome:
 
 - The service works end to end locally
-- All four tests pass
+- All six tests pass
 - The repository clearly demonstrates backend, storage, database, Docker, and supportability skills
